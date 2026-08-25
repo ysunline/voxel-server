@@ -49,6 +49,24 @@ const {
   loadBlocks, listRooms, deleteRoom,
 } = db;
 
+// 纯函数：依据世界种子确定性推导出生点 (x,z)。
+// 与客户端 voxel.js 的 computeSpawnFromSeed 算法保持一致（不含地形安全检查，
+// 由客户端 findSafeSpawnPos 兜底），确保「每个种子只有一个出生坐标」。
+function computeSpawnFromSeed(seed) {
+  const h1 = ((seed * 73856093) ^ (seed >>> 13)) >>> 0;
+  const h2 = ((seed * 19349663) ^ (seed >>> 7)) >>> 0;
+  const r = 32 + (h1 % 64);
+  const a = (h2 % 360) * Math.PI / 180;
+  let x = 8 + Math.round(Math.cos(a) * r);
+  let z = 8 + Math.round(Math.sin(a) * r);
+  x = Math.max(-128, Math.min(128, x));
+  z = Math.max(-128, Math.min(128, z));
+  return { x, z };
+}
+
+// 出生点 Y 哨兵：服务端无地形数据，y<0 表示「客户端需按地形计算安全出生高度」。
+const SPAWN_Y_SENTINEL = -1;
+
 const PORT = process.env.PORT || 3001;
 const MAX_PLAYERS_PER_ROOM = 4;
 const HEARTBEAT_INTERVAL = 30000;
@@ -77,11 +95,13 @@ class Room {
   addPlayer(ws, name) {
     if (this.players.size >= this.maxPlayers) return null;
     const playerId = randomUUID();
+    // v18: 出生点从种子确定性推导，而非写死 (8,8)；y=-1 哨兵交由客户端按地形求安全高度
+    const sp = computeSpawnFromSeed(this.worldSeed);
     const state = {
       id: playerId,
       name: name || `Player ${this.players.size + 1}`,
       ws,
-      position: { x: 8, y: 60, z: 8 },
+      position: { x: sp.x, y: SPAWN_Y_SENTINEL, z: sp.z },
       yaw: 0,
       pitch: 0,
       lastPing: Date.now(),
@@ -270,7 +290,8 @@ wss.on('connection', async (ws, req) => {
   const delta = await loadBlocks(roomId);
   send(ws, {
     type: 'init',
-    id: player.id,
+    playerId: player.id,
+    roomId: room.id,
     roomName: room.name,
     seed: room.worldSeed,
     players: room.getPlayersList().filter(p => p.id !== player.id),
