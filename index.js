@@ -157,7 +157,7 @@ class Room {
 
   getPlayersList() {
     return Array.from(this.players.values()).map(p => ({
-      id: p.id, name: p.name, position: p.position, yaw: p.yaw, pitch: p.pitch, inBoat: !!p.inBoat,
+      playerId: p.id, name: p.name, position: p.position, yaw: p.yaw, pitch: p.pitch, inBoat: !!p.inBoat,
     }));
   }
 }
@@ -304,7 +304,7 @@ wss.on('connection', async (ws, req) => {
         p.yaw = msg.yaw;
         p.pitch = msg.pitch;
         p.inBoat = !!msg.inBoat;
-        room.broadcast({ type: 'playerUpdate', id: player.id, position: msg.position, yaw: msg.yaw, pitch: msg.pitch, inBoat: p.inBoat }, player.id);
+        room.broadcast({ type: 'playerUpdate', playerId: player.id, position: msg.position, yaw: msg.yaw, pitch: msg.pitch, inBoat: p.inBoat }, player.id);
         break;
       case 'setBlock':
         await room.setBlock(msg.x, msg.y, msg.z, msg.blockType, player.id);
@@ -315,7 +315,7 @@ wss.on('connection', async (ws, req) => {
         break;
       }
       case 'chat':
-        room.broadcastToAll({ type: 'chat', id: player.id, name: p.name, text: String(msg.text || '').slice(0, 200) });
+        room.broadcastToAll({ type: 'chat', playerId: player.id, name: p.name, text: String(msg.text || '').slice(0, 200) });
         break;
       case 'ping':
         p.lastPing = Date.now();
@@ -326,7 +326,7 @@ wss.on('connection', async (ws, req) => {
 
   ws.on('close', () => {
     room.removePlayer(player.id);
-    room.broadcastToAll({ type: 'playerLeave', id: player.id });
+    room.broadcastToAll({ type: 'playerLeave', playerId: player.id });
   });
 
   // 发送初始化信息
@@ -344,7 +344,7 @@ wss.on('connection', async (ws, req) => {
   });
 
   // 通知其他人
-  room.broadcastToAll({ type: 'playerJoin', id: player.id, name: player.name });
+  room.broadcastToAll({ type: 'playerJoin', playerId: player.id, name: player.name });
 });
 
 // 心跳清理
@@ -356,7 +356,7 @@ setInterval(() => {
         console.log(`[hb] player ${pid} timeout`);
         p.ws.terminate();
         room.removePlayer(pid);
-        room.broadcastToAll({ type: 'playerLeave', id: pid });
+        room.broadcastToAll({ type: 'playerLeave', playerId: pid });
       }
     }
   }
