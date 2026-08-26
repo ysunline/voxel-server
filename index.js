@@ -40,13 +40,17 @@ try {
       has_password: !!r.password,
       updated_at: new Date(),
     })),
+    roomNameExists: async (name) => {
+      for (const r of roomsMap.values()) { if (r.name === name) return true; }
+      return false;
+    },
     deleteRoom: async (id) => { roomsMap.delete(id); blocksMap.delete(id); },
   };
 }
 
 const {
   saveRoom, loadRoom, saveBlock, saveBlocksBatch,
-  loadBlocks, listRooms, deleteRoom,
+  loadBlocks, listRooms, deleteRoom, roomNameExists,
 } = db;
 
 // 纯函数：依据世界种子确定性推导出生点 (x,z)。
@@ -97,13 +101,24 @@ class Room {
     const playerId = randomUUID();
     // v18: 出生点从种子确定性推导，而非写死 (8,8)；y=-1 哨兵交由客户端按地形求安全高度
     const sp = computeSpawnFromSeed(this.worldSeed);
+    // v21: 按加入顺序在种子出生点周围扇形偏移，避免多人玩家叠在同一坐标互相看不见
+    const idx = this.players.size; // 0-based，第一位玩家 idx=0 落在种子点
+    const angle = idx * (Math.PI * 2 / Math.max(1, MAX_PLAYERS_PER_ROOM));
+    const radius = idx === 0 ? 0 : 2 + idx * 1.5;
+    let x = Math.round(sp.x + Math.cos(angle) * radius);
+    let z = Math.round(sp.z + Math.sin(angle) * radius);
+    x = Math.max(-128, Math.min(128, x));
+    z = Math.max(-128, Math.min(128, z));
     const state = {
       id: playerId,
-      name: name || `Player ${this.players.size + 1}`,
+      name: name || `Player ${idx + 1}`,
       ws,
-      position: { x: sp.x, y: SPAWN_Y_SENTINEL, z: sp.z },
+      position: { x, y: SPAWN_Y_SENTINEL, z },
+      spawnX: x,
+      spawnZ: z,
       yaw: 0,
       pitch: 0,
+      inBoat: false,
       lastPing: Date.now(),
       joinedAt: Date.now(),
     };
@@ -142,7 +157,7 @@ class Room {
 
   getPlayersList() {
     return Array.from(this.players.values()).map(p => ({
-      id: p.id, name: p.name, position: p.position, yaw: p.yaw, pitch: p.pitch,
+      id: p.id, name: p.name, position: p.position, yaw: p.yaw, pitch: p.pitch, inBoat: !!p.inBoat,
     }));
   }
 }
@@ -199,6 +214,17 @@ const httpServer = createServer((req, res) => {
             res.end(JSON.stringify({ error: 'password too long (max 20)' }));
             return;
           }
+          // v21: 重名校验 —— 每个房间名唯一对应一个房间
+          if (opts.name) {
+            try {
+              const exists = await roomNameExists(String(opts.name));
+              if (exists) {
+                res.writeHead(409, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: '房间名已存在，请换一个名字' }));
+                return;
+              }
+            } catch (e) { /* 查重失败不阻断创建 */ }
+          }
           opts.password = password;
           const roomId = randomUUID();
           const room = new Room(roomId, opts);
@@ -210,6 +236,22 @@ const httpServer = createServer((req, res) => {
         } catch (e) { console.error('[http] create room error:', e); res.writeHead(400); res.end('Bad Request'); }
       })();
     });
+    return;
+  }
+
+  // v21: 删除房间（及其方块数据）
+  if (url.pathname.startsWith('/rooms/') && req.method === 'DELETE') {
+    const roomId = url.pathname.split('/').pop();
+    (async () => {
+      try { await deleteRoom(roomId); } catch (e) { console.error('[http] delete room error:', e); }
+      const room = rooms.get(roomId);
+      if (room) {
+        room.broadcastToAll({ type: 'roomDeleted' });
+        rooms.delete(roomId);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    })();
     return;
   }
 
@@ -257,11 +299,12 @@ wss.on('connection', async (ws, req) => {
     if (!p) return;
 
     switch (msg.type) {
-      case 'position':
+      case 'playerState':
         p.position = msg.position;
         p.yaw = msg.yaw;
         p.pitch = msg.pitch;
-        room.broadcast({ type: 'playerMove', id: player.id, position: msg.position, yaw: msg.yaw, pitch: msg.pitch }, player.id);
+        p.inBoat = !!msg.inBoat;
+        room.broadcast({ type: 'playerUpdate', id: player.id, position: msg.position, yaw: msg.yaw, pitch: msg.pitch, inBoat: p.inBoat }, player.id);
         break;
       case 'setBlock':
         await room.setBlock(msg.x, msg.y, msg.z, msg.blockType, player.id);
@@ -294,6 +337,8 @@ wss.on('connection', async (ws, req) => {
     roomId: room.id,
     roomName: room.name,
     seed: room.worldSeed,
+    // v21: 下发本玩家专属出生点（已在服务端按加入顺序偏移），客户端据此定位本地玩家
+    mySpawn: { x: player.position.x, z: player.position.z },
     players: room.getPlayersList().filter(p => p.id !== player.id),
     delta,
   });

@@ -150,4 +150,13 @@ export async function listRooms() {
   return rows;
 }
 
+/** 房间名是否已存在（每个名字唯一对应一个房间） */
+export async function roomNameExists(name) {
+  const { rows } = await pool.query(
+    'SELECT 1 FROM rooms WHERE name = $1 LIMIT 1',
+    [name]
+  );
+  return rows.length > 0;
+}
+
 export { pool };
