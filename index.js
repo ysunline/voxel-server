@@ -104,7 +104,8 @@ class Room {
     // v21: 按加入顺序在种子出生点周围扇形偏移，避免多人玩家叠在同一坐标互相看不见
     const idx = this.players.size; // 0-based，第一位玩家 idx=0 落在种子点
     const angle = idx * (Math.PI * 2 / Math.max(1, MAX_PLAYERS_PER_ROOM));
-    const radius = idx === 0 ? 0 : 2 + idx * 1.5;
+    // v37: 半径有界（贴着固定种子出生点排成小圈），不再随人数无限外扩，避免"出生点跟随玩家散开"
+    const radius = idx === 0 ? 0 : 2 + (idx % 4) * 1.2;
     let x = Math.round(sp.x + Math.cos(angle) * radius);
     let z = Math.round(sp.z + Math.sin(angle) * radius);
     x = Math.max(-128, Math.min(128, x));
@@ -304,8 +305,18 @@ wss.on('connection', async (ws, req) => {
         p.yaw = msg.yaw;
         p.pitch = msg.pitch;
         p.inBoat = !!msg.inBoat;
-        room.broadcast({ type: 'playerUpdate', playerId: player.id, position: msg.position, yaw: msg.yaw, pitch: msg.pitch, inBoat: p.inBoat }, player.id);
+        // v38: 转发护甲，让换装在其他客户端可见
+        if (Array.isArray(msg.armor)) p.armor = msg.armor;
+        room.broadcast({ type: 'playerUpdate', playerId: player.id, position: msg.position, yaw: msg.yaw, pitch: msg.pitch, inBoat: p.inBoat, armor: p.armor || null }, player.id);
         break;
+      // v38: 玩家互击（只做击退/受击反馈，不掉血）
+      case 'pvpHit': {
+        const targetId = String(msg.targetId || '');
+        if (!targetId || !room.players.has(targetId)) break;
+        const dir = msg.knockback || null;
+        room.broadcast({ type: 'pvpHit', fromId: player.id, playerId: player.id, targetId, knockback: dir }, player.id);
+        break;
+      }
       case 'setBlock':
         await room.setBlock(msg.x, msg.y, msg.z, msg.blockType, player.id);
         break;
@@ -337,8 +348,8 @@ wss.on('connection', async (ws, req) => {
     roomId: room.id,
     roomName: room.name,
     seed: room.worldSeed,
-    // v21: 下发本玩家专属出生点（已在服务端按加入顺序偏移），客户端据此定位本地玩家
-    mySpawn: { x: player.position.x, z: player.position.z },
+    // v37: 下发本玩家专属出生点（固定种子点 + 有界偏移），不再使用随移动变化的 player.position
+    mySpawn: { x: player.spawnX, z: player.spawnZ },
     players: room.getPlayersList().filter(p => p.id !== player.id),
     delta,
   });
